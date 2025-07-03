@@ -1,8 +1,8 @@
 `%!in%` <- Negate(`%in%`)
-libs <- c("qs","data.table")
+libs <- c("qs","data.table","plotly","tidyverse","stats4","fitdistrplus","stabledist","scoringRules")
 
 new.packages <- libs[!(libs %in% installed.packages()[,"Package"])]
 if(length(new.packages)) install.packages(new.packages)
 
-suppressMessages(lapply(libs, require, character.only = TRUE))
+purrr::walk(libs, ~library(.x, character.only = TRUE))
 
