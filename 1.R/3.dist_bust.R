@@ -4,11 +4,8 @@
 
 #### 0. Load Required Packages ####
 
-# If some packages are missing — install manually via install.packages()
-library(data.table)
-library(plotly)
-library(extraDistr)
-library(moments)
+# Подключение всех библиотек проекта
+source("1.R/9.libraries.r")
 
 #### 1. Parameter Setup and Data Generation ####
 
