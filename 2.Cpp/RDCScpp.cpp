@@ -1,6 +1,5 @@
 #include <Rcpp.h>
 #include <cmath>
-#include <algorithm>
 #include <random>
 using namespace Rcpp;
 
@@ -9,17 +8,17 @@ NumericVector rank_cpp(const NumericVector& x) {
   int n = x.size();
   NumericVector ranks(n);
   std::vector<std::pair<double, int>> values;
-  
+
   for (int i = 0; i < n; ++i) {
     values.push_back(std::make_pair(x[i], i));
   }
-  
+
   std::sort(values.begin(), values.end());
-  
+
   for (int i = 0; i < n; ++i) {
     ranks[values[i].second] = i + 1;
   }
-  
+
   return ranks;
 }
 
@@ -28,7 +27,7 @@ List cancor_cpp(const NumericMatrix& x, const NumericMatrix& y) {
   int n = x.nrow();
   int p = x.ncol();
   int q = y.ncol();
-  
+
   if (n <= 1 || p == 0 || q == 0) {
     return List::create(
       _["cor"] = NumericVector::create(0.0),
@@ -36,40 +35,40 @@ List cancor_cpp(const NumericMatrix& x, const NumericMatrix& y) {
       _["ycoef"] = NumericMatrix(q, 1)
     );
   }
-  
+
   // Центрируем данные
   NumericMatrix x_centered(n, p);
   NumericMatrix y_centered(n, q);
-  
+
   for (int j = 0; j < p; ++j) {
     double mean_x = 0.0;
     for (int i = 0; i < n; ++i) {
       mean_x += x(i, j);
     }
     mean_x /= n;
-    
+
     for (int i = 0; i < n; ++i) {
       x_centered(i, j) = x(i, j) - mean_x;
     }
   }
-  
+
   for (int j = 0; j < q; ++j) {
     double mean_y = 0.0;
     for (int i = 0; i < n; ++i) {
       mean_y += y(i, j);
     }
     mean_y /= n;
-    
+
     for (int i = 0; i < n; ++i) {
       y_centered(i, j) = y(i, j) - mean_y;
     }
   }
-  
+
   // Вычисляем ковариационные матрицы
   NumericMatrix Sxx(p, p);
   NumericMatrix Syy(q, q);
   NumericMatrix Sxy(p, q);
-  
+
   for (int i = 0; i < p; ++i) {
     for (int j = 0; j < p; ++j) {
       double sum = 0.0;
@@ -79,7 +78,7 @@ List cancor_cpp(const NumericMatrix& x, const NumericMatrix& y) {
       Sxx(i, j) = sum / (n - 1);
     }
   }
-  
+
   for (int i = 0; i < q; ++i) {
     for (int j = 0; j < q; ++j) {
       double sum = 0.0;
@@ -89,7 +88,7 @@ List cancor_cpp(const NumericMatrix& x, const NumericMatrix& y) {
       Syy(i, j) = sum / (n - 1);
     }
   }
-  
+
   for (int i = 0; i < p; ++i) {
     for (int j = 0; j < q; ++j) {
       double sum = 0.0;
@@ -99,7 +98,7 @@ List cancor_cpp(const NumericMatrix& x, const NumericMatrix& y) {
       Sxy(i, j) = sum / (n - 1);
     }
   }
-  
+
   // Проверка на вырожденность
   bool singular = false;
   for (int i = 0; i < p; ++i) {
@@ -114,7 +113,7 @@ List cancor_cpp(const NumericMatrix& x, const NumericMatrix& y) {
       break;
     }
   }
-  
+
   if (singular) {
     return List::create(
       _["cor"] = NumericVector::create(0.0),
@@ -122,31 +121,31 @@ List cancor_cpp(const NumericMatrix& x, const NumericMatrix& y) {
       _["ycoef"] = NumericMatrix(q, 1)
     );
   }
-  
+
   // Фолбэк на R cancor для сложных вычислений
   Function cancor_r("cancor");
   List result = cancor_r(x, y);
-  
+
   return result;
 }
 
 // [[Rcpp::export]]
-List RDCSelection_cpp(const DataFrame& data, 
+List RDCSelection_cpp(const DataFrame& data,
                       Nullable<String> target = R_NilValue,
                       double threshold = 0.1,
                       int k_features = 20,
                       int num_permutations = 500) {
-  
+
   CharacterVector feature_names = data.names();
   int n_features = feature_names.size();
   CharacterVector features;
   NumericVector target_vector;
   bool has_target = false;
-  
+
   if (target.isNotNull()) {
     String target_name = as<String>(target);
     has_target = true;
-    
+
     // Находим целевую переменную
     for (int i = 0; i < n_features; ++i) {
       if (feature_names[i] == target_name) {
@@ -154,7 +153,7 @@ List RDCSelection_cpp(const DataFrame& data,
         break;
       }
     }
-    
+
     // Создаем список признаков без целевой переменной
     for (int i = 0; i < n_features; ++i) {
       if (feature_names[i] != target_name) {
@@ -164,30 +163,30 @@ List RDCSelection_cpp(const DataFrame& data,
   } else {
     features = feature_names;
   }
-  
+
   int n_obs = 0;
   if (features.size() > 0) {
     NumericVector first_feature = data[as<std::string>(features[0])];
     n_obs = first_feature.size();
   }
-  
+
   NumericVector rdc_scores(features.size());
   CharacterVector rdc_names(features.size());
-  
+
   // Быстрые C++ генераторы с фиксированным seed
   std::mt19937 gen(123);
   std::uniform_int_distribution<> int_dist;
   std::normal_distribution<> norm_dist(0.0, 1.0);
-  
+
   // Объявляем R функции один раз для всех циклов
   Function cancor_r("cancor");
-  
+
   for (int feat_idx = 0; feat_idx < features.size(); ++feat_idx) {
     rdc_names[feat_idx] = features[feat_idx];
-    
+
     NumericVector x = data[as<std::string>(features[feat_idx])];
     NumericVector y;
-    
+
     if (has_target) {
       y = target_vector;
     } else {
@@ -206,48 +205,48 @@ List RDCSelection_cpp(const DataFrame& data,
         y = x; // Fallback если только один признак
       }
     }
-    
+
     // Обработка NA/NaN
     NumericVector x_clean(n_obs);
     NumericVector y_clean(n_obs);
-    
+
     for (int i = 0; i < n_obs; ++i) {
       if (std::isnan(x[i]) || std::isinf(x[i])) {
         x_clean[i] = 0.0;
       } else {
         x_clean[i] = x[i];
       }
-      
+
       if (std::isnan(y[i]) || std::isinf(y[i])) {
         y_clean[i] = 0.0;
       } else {
         y_clean[i] = y[i];
       }
     }
-    
+
     // Вычисляем ранги быстро в C++
     NumericVector x_rank = rank_cpp(x_clean);
     NumericVector y_rank = rank_cpp(y_clean);
-    
+
     int k = std::min(k_features, n_obs - 1);
-    
+
     // Создаем случайные матрицы быстро в C++
     NumericMatrix x_matrix(n_obs, k);
     NumericMatrix y_matrix(n_obs, k);
-    
+
     double max_x_rank = *std::max_element(x_rank.begin(), x_rank.end());
     double max_y_rank = *std::max_element(y_rank.begin(), y_rank.end());
-    
+
     for (int i = 0; i < k; ++i) {
       for (int j = 0; j < n_obs; ++j) {
         double rand_x = norm_dist(gen);
         double rand_y = norm_dist(gen);
-        
+
         x_matrix(j, i) = std::sin(rand_x * x_rank[j] / max_x_rank);
         y_matrix(j, i) = std::cos(rand_y * y_rank[j] / max_y_rank);
       }
     }
-    
+
     // Вычисляем каноническую корреляцию
     double canonical_corr = 0.0;
     try {
@@ -259,18 +258,18 @@ List RDCSelection_cpp(const DataFrame& data,
     } catch (...) {
       canonical_corr = 0.0;
     }
-    
+
     if (num_permutations > 0) {
       NumericVector null_scores(num_permutations);
-      
+
       for (int perm = 0; perm < num_permutations; ++perm) {
         // Быстро перемешиваем y в C++
         NumericVector y_perm = clone(y_clean);
         std::shuffle(y_perm.begin(), y_perm.end(), gen);
-        
+
         NumericVector y_rank_perm = rank_cpp(y_perm);
         double max_y_rank_perm = *std::max_element(y_rank_perm.begin(), y_rank_perm.end());
-        
+
         NumericMatrix y_matrix_perm(n_obs, k);
         for (int i = 0; i < k; ++i) {
           for (int j = 0; j < n_obs; ++j) {
@@ -278,7 +277,7 @@ List RDCSelection_cpp(const DataFrame& data,
             y_matrix_perm(j, i) = std::cos(rand_y_perm * y_rank_perm[j] / max_y_rank_perm);
           }
         }
-        
+
         try {
           List cca_perm = cancor_r(x_matrix, y_matrix_perm);
           NumericVector correlations_perm = cca_perm["cor"];
@@ -291,7 +290,7 @@ List RDCSelection_cpp(const DataFrame& data,
           null_scores[perm] = 0.0;
         }
       }
-      
+
       // Вычисляем p-value
       int count = 0;
       for (int i = 0; i < num_permutations; ++i) {
@@ -300,21 +299,21 @@ List RDCSelection_cpp(const DataFrame& data,
         }
       }
       double null_mean = (double)count / num_permutations;
-      
+
       double scaled_score = std::abs(null_mean - 0.5) / 0.5;
       rdc_scores[feat_idx] = std::min(1.0, scaled_score);
     } else {
       rdc_scores[feat_idx] = canonical_corr;
     }
   }
-  
+
   // Присваиваем имена
   rdc_scores.names() = rdc_names;
-  
+
   // Отбираем признаки по порогу
   CharacterVector selected_features;
   CharacterVector removed_features;
-  
+
   for (int i = 0; i < features.size(); ++i) {
     if (rdc_scores[i] >= threshold) {
       selected_features.push_back(features[i]);
@@ -322,7 +321,7 @@ List RDCSelection_cpp(const DataFrame& data,
       removed_features.push_back(features[i]);
     }
   }
-  
+
   // Добавляем целевую переменную если есть
   CharacterVector final_features;
   if (has_target) {
@@ -333,7 +332,7 @@ List RDCSelection_cpp(const DataFrame& data,
   } else {
     final_features = selected_features;
   }
-  
+
   // Создаем фильтрованный DataFrame
   List filtered_data_list;
   for (int i = 0; i < final_features.size(); ++i) {
@@ -342,7 +341,7 @@ List RDCSelection_cpp(const DataFrame& data,
   }
   filtered_data_list.names() = final_features;
   DataFrame filtered_data(filtered_data_list);
-  
+
   return List::create(
     _["data"] = filtered_data,
     _["rdc_scores"] = rdc_scores,
