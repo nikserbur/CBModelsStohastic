@@ -47,8 +47,8 @@ libs <- c(
   "xts",               # Time series objects (Demo_Volatility_Analysis.R)
   "rugarch",           # GARCH(1,1) benchmark (Demo_Volatility_Analysis.R)
   "highfrequency",     # HAR model (Demo_Volatility_Analysis.R)
-  "Rcpp",              # Compiling 2.Cpp/RDCScpp.cpp via Rcpp::sourceCpp()
-  "httr"               # HTTP запросы и соединения
+  "vars",              # VAR models (PredictTimeSeriesWithSVD() in all_fun.R)
+  "Rcpp"               # Compiling 2.Cpp/*.cpp via Rcpp::sourceCpp()
 )
 
 #### Автоматическая установка недостающих пакетов ####

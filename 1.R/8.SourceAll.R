@@ -7,12 +7,10 @@
 # instead of being hidden, and the success message is printed only when
 # every file has been loaded.
 local({
+  # all_fun.R sources 1.R/9.libraries.r itself, so it is not listed here
+  # (listing both would install-check and attach every package twice).
   project_files <- c(
-    "1.R/9.libraries.r",
-    "1.R/1.functions/HarVolatilityFunctions.R",
-    "1.R/1.functions/HmmFunctions.R",
-    "1.R/1.functions/BoostingFunctions.R",
-    "1.R/1.functions/TalebR2Functions.R"
+    "1.R/1.functions/all_fun.R"
   )
 
   failed_files <- character(0)
