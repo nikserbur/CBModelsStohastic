@@ -1,4 +1,9 @@
 # Distribution Dashboard: plots, moments, normality tests and power law tails
+
+# The function and the examples below use data.table and plotly functions unqualified
+library(data.table)
+library(plotly)
+
 BuildDistDashboard <- function(x, nbins = 100, sample_shapiro = 5000,
                                tail_fraction = 0.1, conf_level = 0.95, save_qs_path = NULL) {
   suppressWarnings({
