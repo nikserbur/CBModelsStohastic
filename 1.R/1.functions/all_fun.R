@@ -1886,6 +1886,60 @@ ComputeShapleyR2 <- function(data, target_var, alpha_tail = 3.5) {
   return(shapley_values)
 }
 
+#### 4.1. Хвостовые метрики и оценка прогнозного распределения по горизонтам ####
+
+#' ComputeTailRiskByHorizon — VaR и CTE (верхний хвост) по каждому горизонту
+#' Риск — рост ставки, поэтому берётся верхний хвост. Статистики считаются по всем
+#' путям для каждого горизонта h (по строке матрицы), а не по отдельному пути:
+#'   VaR_c(h) = F_h^{-1}(c) = inf{x : F_h(x) >= c}  (эмпирический квантиль, type = 1),
+#'   CTE_c(h) = E[r_h | r_h > VaR_c(h)].
+#' Для риска снижения ставки те же формулы применяются к -simulations.
+#' @param simulations матрица horizon × n_simulations (строки — горизонты)
+#' @param confidence уровень доверия c
+#' @return data.table: horizon, confidence, VaR, CTE
+ComputeTailRiskByHorizon <- function(simulations, confidence = 0.95) {
+  stopifnot(is.matrix(simulations), confidence > 0, confidence < 1)
+  per_horizon <- t(apply(simulations, 1, function(x) {
+    x <- x[is.finite(x)]
+    var_c <- stats::quantile(x, probs = confidence, type = 1, names = FALSE)
+    tail_x <- x[x > var_c]
+    c(VaR = var_c, CTE = if (length(tail_x) > 0) mean(tail_x) else var_c)
+  }))
+  data.table(
+    horizon = seq_len(nrow(simulations)),
+    confidence = confidence,
+    VaR = per_horizon[, "VaR"],
+    CTE = per_horizon[, "CTE"]
+  )
+}
+
+#' EvaluatePredictiveSample — CRPS и PIT по горизонтам для выборки симуляций
+#' Для горизонта h с фактическим значением y_h и выборкой x = simulations[h, ]:
+#'   CRPS — scoringRules::crps_sample(y_h, x) (Gneiting, Raftery, 2007);
+#'   PIT  — эмпирическая функция распределения выборки в точке y_h,
+#'          F(y_h-) + V·(F(y_h) - F(y_h-)), V ~ U(0, 1) (рандомизация нужна только
+#'          при совпадениях x = y_h; иначе это mean(x <= y_h)).
+#' В scoringRules нет функции pit_sample(), поэтому PIT считается здесь.
+#' @param simulations матрица horizon × n_simulations
+#' @param realised вектор фактических значений длины horizon (NA — факта нет)
+#' @return data.table: horizon, realised, CRPS, PIT — только для горизонтов с фактом
+EvaluatePredictiveSample <- function(simulations, realised) {
+  stopifnot(is.matrix(simulations), length(realised) == nrow(simulations))
+  idx <- which(is.finite(realised))
+  if (length(idx) == 0) {
+    return(data.table(horizon = integer(), realised = numeric(), CRPS = numeric(), PIT = numeric()))
+  }
+  pit <- vapply(idx, function(h) {
+    x <- simulations[h, ]
+    y <- realised[h]
+    f_below <- mean(x < y)
+    f_at <- mean(x <= y)
+    f_below + stats::runif(1) * (f_at - f_below)
+  }, numeric(1))
+  crps <- scoringRules::crps_sample(y = realised[idx], dat = simulations[idx, , drop = FALSE])
+  data.table(horizon = idx, realised = realised[idx], CRPS = crps, PIT = pit)
+}
+
 #### 5. Анализ жирных хвостов ####
 
 #' AnalyzeFatTails — Анализ жирных хвостов для данных

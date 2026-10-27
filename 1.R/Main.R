@@ -666,6 +666,34 @@ Encoding(validation_report$Test) <- "UTF-8"
 Encoding(validation_report$Notes) <- "UTF-8"
 
 cat("Медианный прогноз ставки через 12 месяцев:", round(diagnostics$median[12], 2), "%\n")
+
+#### 10.1. Хвостовые метрики риска по горизонтам (VaR / CTE, верхний хвост) ####
+# Квантили и средние хвоста считаются по всем путям для каждого горизонта
+TAIL_CONFIDENCE <- 0.95
+tail_risk <- ComputeTailRiskByHorizon(final_integrated_model$simulations, confidence = TAIL_CONFIDENCE)
+tail_risk[, date := forecast_data$date]
+print(tail_risk)
+
+#### 10.2. Оценка прогнозного распределения (CRPS / PIT) ####
+# Фактические месячные средние RUONIA за прогнозные месяцы берутся из того же файла,
+# что и в prep_data(); последний (возможно, неполный) месяц файла не используется.
+ruonia_daily <- read_xlsx("3.Data/RC_F11_01_2010_T04_07_2025.xlsx") %>%
+  as.data.table() %>%
+  .[, .(date = as.Date(DT), ruo)]
+last_ruonia_month <- floor_date(max(ruonia_daily$date, na.rm = TRUE), "month")
+realised_ruonia <- ruonia_daily[floor_date(date, "month") < last_ruonia_month,
+                                .(ruonia_rate = mean(ruo, na.rm = TRUE)),
+                                by = .(date = floor_date(date, "month"))]
+realised_for_forecast <- realised_ruonia$ruonia_rate[match(forecast_data$date, realised_ruonia$date)]
+forecast_evaluation <- EvaluatePredictiveSample(final_integrated_model$simulations, realised_for_forecast)
+if (nrow(forecast_evaluation) == 0) {
+  message("CRPS/PIT пропущены: в 3.Data нет полных месяцев RUONIA в прогнозном периоде (",
+          format(min(forecast_data$date)), " – ", format(max(forecast_data$date)),
+          "; последний полный месяц в файле — ", format(max(realised_ruonia$date)), ").")
+} else {
+  print(forecast_evaluation)
+}
+
 #### 11. Визуализация результатов ####
 # Создание продвинутого графика
 # Создание красивой визуализации Monte Carlo
@@ -1510,6 +1538,8 @@ final_results <- list(
   shapley_analysis = shapley_r2,
   integrated_model = final_integrated_model,
   diagnostics = diagnostics,
+  tail_risk = tail_risk,
+  forecast_evaluation = forecast_evaluation,
   volatility_analysis = volatility_analysis,
   model_formulas = final_integrated_model$model_formulas,
   calibrated_shocks_info = list(
