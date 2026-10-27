@@ -1720,6 +1720,21 @@ EstimateAlphaParameter <- function(data, method = "hill") {
 
 #### 4. Taleb R² и анализ функции ####
 
+#' EstimateStudentScale — Масштаб s распределения Стьюдента t(ν) для остатков при фиксированном ν
+#' Метод максимального правдоподобия (MASS::fitdistr); если оценка не удалась —
+#' состоятельная квантильная оценка MAD / t_ν^{-1}(0.75).
+#' @param residuals вектор остатков
+#' @param nu число степеней свободы (хвостовой индекс)
+#' @return оценка масштаба s
+EstimateStudentScale <- function(residuals, nu) {
+  fit <- tryCatch(suppressWarnings(MASS::fitdistr(residuals, "t", df = nu)),
+                  error = function(e) NULL)
+  if (!is.null(fit) && is.finite(fit$estimate[["s"]]) && fit$estimate[["s"]] > 0) {
+    return(fit$estimate[["s"]])
+  }
+  stats::mad(residuals, constant = 1) / stats::qt(0.75, df = nu)
+}
+
 #' CalculateRobustR2 — Расчет скорректированного R² по методу Талеба
 #' @param y_actual фактические значения
 #' @param y_predicted предсказанные значения
@@ -1757,29 +1772,37 @@ CalculateRobustR2 <- function(y_actual, y_predicted, alpha_tail = 3.5) {
   r2_standard <- ifelse(ss_tot > 0, 1 - ss_res / ss_tot, 0)
 
   # Taleb точная формула для t-распределения
-  # R² = a²(α-2)/(a²(α-2) + α)
+  # R² = a²(α-2)/(a²(α-2) + α) для y = a·x + s·ε, Var(x) = 1, ε ~ t(α),
+  # т.е. a² = Var(ŷ)/s², где s — масштаб t-распределения остатков.
+  # Множитель α/(α-2) переводит s² в дисперсию ошибки и применяется один раз:
+  # выборочная дисперсия остатков уже оценивает s²·α/(α-2), поэтому в a²
+  # используется s², а не var(residuals).
   residuals <- y_actual - y_predicted
 
   # Безопасные вычисления дисперсий
   var_predictions <- var(y_predicted, na.rm = TRUE)
   var_residuals <- var(residuals, na.rm = TRUE)
+  t_scale <- NA_real_
 
   if (!is.na(var_residuals) && !is.na(var_predictions) && var_residuals > 0 && var_predictions > 0) {
-    a_squared <- var_predictions / var_residuals
-
     # Ограничиваем alpha > 2 для корректности формулы
     alpha_safe <- max(alpha_tail, 2.1)
+
+    t_scale <- EstimateStudentScale(residuals, alpha_safe)
+    a_squared <- var_predictions / t_scale^2
 
     r2_taleb_exact <- (a_squared * (alpha_safe - 2)) / (a_squared * (alpha_safe - 2) + alpha_safe)
   } else {
     r2_taleb_exact <- 0
   }
 
-  # MLE коррекция
-  # R² = 1 - SS_res × (α/(α-2)) / SS_tot
-  if (alpha_tail > 2) {
-    correction_factor <- alpha_tail / (alpha_tail - 2)
-    r2_mle_corrected <- 1 - (ss_res * correction_factor) / ss_tot
+  # MLE коррекция: средний квадрат остатков SS_res/n заменяется дисперсией
+  # ошибки подогнанной t-модели s²·α/(α-2)
+  # R² = 1 - n·s²·(α/(α-2)) / SS_tot
+  if (alpha_tail > 2 && var_residuals > 0) {
+    t_scale_mle <- EstimateStudentScale(residuals, alpha_tail)
+    model_noise_variance <- t_scale_mle^2 * alpha_tail / (alpha_tail - 2)
+    r2_mle_corrected <- 1 - length(residuals) * model_noise_variance / ss_tot
   } else {
     r2_mle_corrected <- r2_standard
   }
@@ -1790,7 +1813,8 @@ CalculateRobustR2 <- function(y_actual, y_predicted, alpha_tail = 3.5) {
     r2_mle_corrected = max(0, min(1, r2_mle_corrected)),
     alpha_used = alpha_tail,
     var_predictions = var_predictions,
-    var_residuals = var_residuals
+    var_residuals = var_residuals,
+    t_scale = t_scale
   ))
 }
 

@@ -62,6 +62,18 @@ EstimateAlpha <- function(data) {
   return(alpha_hill)
 }
 
+# Scale s of a Student-t(nu) fit to the residuals, with nu fixed.
+# Maximum likelihood (MASS::fitdistr); if the fit fails, the consistent
+# quantile estimator MAD / t_nu^{-1}(0.75) is used instead.
+EstimateStudentScale <- function(residuals, nu) {
+  fit <- tryCatch(suppressWarnings(MASS::fitdistr(residuals, "t", df = nu)),
+                  error = function(e) NULL)
+  if (!is.null(fit) && is.finite(fit$estimate[["s"]]) && fit$estimate[["s"]] > 0) {
+    return(fit$estimate[["s"]])
+  }
+  stats::mad(residuals, constant = 1) / stats::qt(0.75, df = nu)
+}
+
 # R² correction for fat tails
 CalculateRobustR2 <- function(y_actual, y_fitted, alpha_tail = 3.5) {
   residuals <- y_actual - y_fitted
@@ -72,41 +84,29 @@ CalculateRobustR2 <- function(y_actual, y_fitted, alpha_tail = 3.5) {
   ss_res <- sum(residuals^2)
   ss_tot <- sum((y_actual - mean(y_actual))^2)
   r2_standard <- 1 - ss_res/ss_tot
+  t_scale <- NA_real_
   if(alpha_tail > 2) {  # Fat tails with finite second moment
 
-    # Method 1: Taleb's exact R² formula (6.14) for t-distributed errors
-    # When ε ~ t(α), then E[ε²] = α/(α-2) for α > 2
-    # Formula: R² = a²(α-2)/(a²(α-2) + α)
-
-    # Estimate regression coefficients variance from data
-    model_temp <- lm(y_actual ~ y_fitted)
-    coef_variance <- var(coef(model_temp)[2])  # variance of slope coefficient
-
-    # Apply Taleb's exact formula (6.14): R² = a²(α-2)/(a²(α-2) + α)
+    # Taleb's exact R² formula (6.14) for t-distributed errors:
+    # R² = a²(α-2)/(a²(α-2) + α) for y = a·x + s·ε, Var(x) = 1, ε ~ t(α),
+    # i.e. R² = Var(signal) / (Var(signal) + s²·α/(α-2)).
+    # The factor α/(α-2) turns the squared t scale s² into the error
+    # variance, so it is applied to s² once. The sample variance of the
+    # residuals already estimates s²·α/(α-2) and must not be multiplied again.
     if(alpha_tail > 2.1) {
-      # Calculate true signal to noise ratio from regression
       signal_variance <- var(y_fitted)
-      observed_noise_variance <- var(residuals)
+      t_scale <- EstimateStudentScale(residuals, alpha_tail)
+      model_noise_variance <- t_scale^2 * alpha_tail / (alpha_tail - 2)
 
-      # Theoretical correction: E[ε²] = α/(α-2) for t-distribution
-      theoretical_noise_multiplier <- alpha_tail / (alpha_tail - 2)
-
-      # Apply Taleb's exact formula
-      # R² = signal_var / (signal_var + theoretical_noise_var)
-      theoretical_noise_variance <- observed_noise_variance * theoretical_noise_multiplier
-      r2_taleb_exact <- signal_variance / (signal_variance + theoretical_noise_variance)
+      # Method 1: Taleb's exact formula
+      r2_taleb_exact <- signal_variance / (signal_variance + model_noise_variance)
       r2_taleb_exact <- max(0, min(1, r2_taleb_exact))
+
+      # Method 2: MLE correction: the residual mean square SS_res/n is
+      # replaced by the error variance of the fitted t model
+      r2_mle_corrected <- max(0, 1 - n * model_noise_variance / ss_tot)
     } else {
       r2_taleb_exact <- 0  # As α approaches 2, E[R²] approaches 0
-    }
-
-    # Method 2: MLE correction accounting for E[ε²] = α/(α-2)
-    if(alpha_tail > 2.1) {
-      # Correct the sum of squares using theoretical expectation
-      expected_ss_multiplier <- alpha_tail / (alpha_tail - 2)
-      corrected_ss_res <- ss_res * expected_ss_multiplier
-      r2_mle_corrected <- max(0, 1 - corrected_ss_res / ss_tot)
-    } else {
       r2_mle_corrected <- 0
     }
 
@@ -122,6 +122,7 @@ CalculateRobustR2 <- function(y_actual, y_fitted, alpha_tail = 3.5) {
     r2_mle_corrected = r2_mle_corrected,
     alpha_estimated = EstimateAlpha(residuals_abs),
     degrees_freedom = alpha_tail,
+    t_scale = t_scale,
     expected_error_variance = if(alpha_tail > 2) alpha_tail / (alpha_tail - 2) else Inf
   )
 }
@@ -274,7 +275,7 @@ plot_tail_probs <- plot_ly(tail_probs, x = ~threshold, y = ~probability,
     xaxis = list(title = "Threshold (in σ)")
   )
 
-# Plot 4: Dramatic R² comparison showing overestimation
+# Plot 4: R² comparison: standard vs fat-tail corrections
 r2_comparison <- final_comparison %>%
   melt(id.vars = "model_type",
        measure.vars = c("r2_standard", "r2_taleb_exact", "r2_mle_corrected"),
@@ -292,7 +293,7 @@ plot_r2_comparison <- plot_ly(r2_comparison, x = ~model_type, y = ~r2_value,
                              color = ~r2_type_label, type = 'bar', barmode = 'group',
                              opacity = 0.8) %>%
   layout(
-    title = "Conservative R² Correction Methods vs Standard R²",
+    title = "Fat-Tail R² Corrections vs Standard R²",
     yaxis = list(title = "R² Value"),
     xaxis = list(title = "Model Type"),
     legend = list(title = "Method")
