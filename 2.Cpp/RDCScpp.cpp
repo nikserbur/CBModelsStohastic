@@ -3,7 +3,9 @@
 #include <random>
 using namespace Rcpp;
 
-// Вспомогательная функция для вычисления ранга
+// Вспомогательная функция для вычисления ранга.
+// Совпадающие значения получают средний ранг, как rank() в R (ties.method = "average"),
+// иначе константный признак получал бы ранги 1..n в порядке строк.
 NumericVector rank_cpp(const NumericVector& x) {
   int n = x.size();
   NumericVector ranks(n);
@@ -15,11 +17,50 @@ NumericVector rank_cpp(const NumericVector& x) {
 
   std::sort(values.begin(), values.end());
 
-  for (int i = 0; i < n; ++i) {
-    ranks[values[i].second] = i + 1;
+  int i = 0;
+  while (i < n) {
+    int j = i;
+    while (j + 1 < n && values[j + 1].first == values[i].first) ++j;
+    double average_rank = (i + j) / 2.0 + 1.0;
+    for (int m = i; m <= j; ++m) {
+      ranks[values[m].second] = average_rank;
+    }
+    i = j + 1;
   }
 
   return ranks;
+}
+
+// Случайные нелинейные проекции копула-преобразования (Lopez-Paz, Hennig, Schölkopf, 2013):
+// u = rank(x) / n, phi_i(u) = sin(s / 2 * (w_i * u + b_i)), (w_i, b_i) ~ N(0, 1).
+// Веса w_i, b_i выбираются один раз на признак и общие для всех наблюдений;
+// s / 2 — масштаб s / ncol([u, 1]) из оригинального кода RDC (s = 1/6).
+NumericMatrix rdc_random_features(const NumericVector& ranks, int k, double s,
+                                  std::mt19937& gen) {
+  int n = ranks.size();
+  std::normal_distribution<> norm_dist(0.0, 1.0);
+  NumericMatrix features(n, k);
+  for (int i = 0; i < k; ++i) {
+    double w = norm_dist(gen);
+    double b = norm_dist(gen);
+    for (int j = 0; j < n; ++j) {
+      features(j, i) = std::sin(s / 2.0 * (w * ranks[j] / n + b));
+    }
+  }
+  return features;
+}
+
+// Наибольшая каноническая корреляция (0, если cancor() завершился ошибкой)
+double max_cancor(Function& cancor_r, const NumericMatrix& x, const NumericMatrix& y) {
+  try {
+    List cca_result = cancor_r(x, y);
+    NumericVector correlations = cca_result["cor"];
+    if (correlations.size() > 0) {
+      return *std::max_element(correlations.begin(), correlations.end());
+    }
+  } catch (...) {
+  }
+  return 0.0;
 }
 
 // [[Rcpp::export]]
@@ -171,12 +212,15 @@ List RDCSelection_cpp(const DataFrame& data,
   }
 
   NumericVector rdc_scores(features.size());
+  NumericVector p_values(features.size());
   CharacterVector rdc_names(features.size());
+
+  // Масштаб случайных проекций (s = 1/6 в Lopez-Paz et al., 2013)
+  const double RDC_SCALE = 1.0 / 6.0;
 
   // Быстрые C++ генераторы с фиксированным seed
   std::mt19937 gen(123);
   std::uniform_int_distribution<> int_dist;
-  std::normal_distribution<> norm_dist(0.0, 1.0);
 
   // Объявляем R функции один раз для всех циклов
   Function cancor_r("cancor");
@@ -224,98 +268,68 @@ List RDCSelection_cpp(const DataFrame& data,
       }
     }
 
-    // Вычисляем ранги быстро в C++
+    // Копула-преобразование: ранги
     NumericVector x_rank = rank_cpp(x_clean);
     NumericVector y_rank = rank_cpp(y_clean);
 
     int k = std::min(k_features, n_obs - 1);
 
-    // Создаем случайные матрицы быстро в C++
-    NumericMatrix x_matrix(n_obs, k);
-    NumericMatrix y_matrix(n_obs, k);
-
-    double max_x_rank = *std::max_element(x_rank.begin(), x_rank.end());
-    double max_y_rank = *std::max_element(y_rank.begin(), y_rank.end());
-
-    for (int i = 0; i < k; ++i) {
-      for (int j = 0; j < n_obs; ++j) {
-        double rand_x = norm_dist(gen);
-        double rand_y = norm_dist(gen);
-
-        x_matrix(j, i) = std::sin(rand_x * x_rank[j] / max_x_rank);
-        y_matrix(j, i) = std::cos(rand_y * y_rank[j] / max_y_rank);
-      }
+    // Константный признак (все ранги равны) не несёт информации о зависимости
+    bool is_constant =
+      *std::min_element(x_rank.begin(), x_rank.end()) == *std::max_element(x_rank.begin(), x_rank.end()) ||
+      *std::min_element(y_rank.begin(), y_rank.end()) == *std::max_element(y_rank.begin(), y_rank.end());
+    if (is_constant || k < 1) {
+      rdc_scores[feat_idx] = 0.0;
+      p_values[feat_idx] = (num_permutations > 0) ? 1.0 : NA_REAL;
+      continue;
     }
 
-    // Вычисляем каноническую корреляцию
-    double canonical_corr = 0.0;
-    try {
-      List cca_result = cancor_r(x_matrix, y_matrix);
-      NumericVector correlations = cca_result["cor"];
-      if (correlations.size() > 0) {
-        canonical_corr = *std::max_element(correlations.begin(), correlations.end());
-      }
-    } catch (...) {
-      canonical_corr = 0.0;
-    }
+    // Случайные признаки RDC с общими для всех наблюдений весами
+    NumericMatrix x_matrix = rdc_random_features(x_rank, k, RDC_SCALE, gen);
+    NumericMatrix y_matrix = rdc_random_features(y_rank, k, RDC_SCALE, gen);
+
+    // RDC — наибольшая каноническая корреляция между наборами признаков
+    double canonical_corr = max_cancor(cancor_r, x_matrix, y_matrix);
+    rdc_scores[feat_idx] = canonical_corr;
 
     if (num_permutations > 0) {
-      NumericVector null_scores(num_permutations);
+      // Перестановочный тест независимости: строки признаков y переставляются
+      // (те же веса, что и для наблюдаемой статистики), p = (1 + #{RDC_perm >= RDC}) / (1 + B)
+      std::vector<int> row_order(n_obs);
+      for (int j = 0; j < n_obs; ++j) row_order[j] = j;
 
+      int count_greater_equal = 0;
+      NumericMatrix y_matrix_perm(n_obs, k);
       for (int perm = 0; perm < num_permutations; ++perm) {
-        // Быстро перемешиваем y в C++
-        NumericVector y_perm = clone(y_clean);
-        std::shuffle(y_perm.begin(), y_perm.end(), gen);
-
-        NumericVector y_rank_perm = rank_cpp(y_perm);
-        double max_y_rank_perm = *std::max_element(y_rank_perm.begin(), y_rank_perm.end());
-
-        NumericMatrix y_matrix_perm(n_obs, k);
+        std::shuffle(row_order.begin(), row_order.end(), gen);
         for (int i = 0; i < k; ++i) {
           for (int j = 0; j < n_obs; ++j) {
-            double rand_y_perm = norm_dist(gen);
-            y_matrix_perm(j, i) = std::cos(rand_y_perm * y_rank_perm[j] / max_y_rank_perm);
+            y_matrix_perm(j, i) = y_matrix(row_order[j], i);
           }
         }
-
-        try {
-          List cca_perm = cancor_r(x_matrix, y_matrix_perm);
-          NumericVector correlations_perm = cca_perm["cor"];
-          if (correlations_perm.size() > 0) {
-            null_scores[perm] = *std::max_element(correlations_perm.begin(), correlations_perm.end());
-          } else {
-            null_scores[perm] = 0.0;
-          }
-        } catch (...) {
-          null_scores[perm] = 0.0;
+        if (max_cancor(cancor_r, x_matrix, y_matrix_perm) >= canonical_corr) {
+          count_greater_equal++;
         }
       }
-
-      // Вычисляем p-value
-      int count = 0;
-      for (int i = 0; i < num_permutations; ++i) {
-        if (canonical_corr >= null_scores[i]) {
-          count++;
-        }
-      }
-      double null_mean = (double)count / num_permutations;
-
-      double scaled_score = std::abs(null_mean - 0.5) / 0.5;
-      rdc_scores[feat_idx] = std::min(1.0, scaled_score);
+      p_values[feat_idx] = (1.0 + count_greater_equal) / (1.0 + num_permutations);
     } else {
-      rdc_scores[feat_idx] = canonical_corr;
+      p_values[feat_idx] = NA_REAL;
     }
   }
 
   // Присваиваем имена
   rdc_scores.names() = rdc_names;
+  p_values.names() = rdc_names;
 
-  // Отбираем признаки по порогу
+  // Отбор признаков: с перестановками — p-value <= threshold (уровень значимости),
+  // без перестановок — RDC >= threshold
   CharacterVector selected_features;
   CharacterVector removed_features;
 
   for (int i = 0; i < features.size(); ++i) {
-    if (rdc_scores[i] >= threshold) {
+    bool is_selected = (num_permutations > 0) ? (p_values[i] <= threshold)
+                                              : (rdc_scores[i] >= threshold);
+    if (is_selected) {
       selected_features.push_back(features[i]);
     } else {
       removed_features.push_back(features[i]);
@@ -345,6 +359,7 @@ List RDCSelection_cpp(const DataFrame& data,
   return List::create(
     _["data"] = filtered_data,
     _["rdc_scores"] = rdc_scores,
+    _["p_values"] = p_values,
     _["removed_features"] = removed_features,
     _["selected_features"] = final_features,
     _["threshold"] = threshold
