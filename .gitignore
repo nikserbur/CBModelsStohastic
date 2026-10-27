@@ -4,3 +4,7 @@
 .Ruserdata
 .cursor/rules/rules.mdc
 .DS_Store
+
+# Outputs written by the scripts
+3.Data/*.qs
+3.Data/*.rds

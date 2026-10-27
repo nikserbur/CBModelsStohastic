@@ -31,6 +31,184 @@ tryCatch({
   RCPP_AVAILABLE <- FALSE
 })
 
+#### Загрузка и подготовка данных ####
+
+#' prep_data — загрузка и объединение месячной панели из 3.Data (используется в Main.R
+#' и DataAnalysisAndRegression.R); пропуски заполняются линейной регрессией по времени
+prep_data <- function() {
+# исходные данные тут https://www.cbr.ru/dkp/statistics/
+
+safe_read_xlsx <- function(path, ...) {
+  tmp <- tempfile(fileext = ".xlsx")
+  file.copy(path, tmp, overwrite = TRUE)
+  read_xlsx(tmp, ...)
+}
+
+# Данные и инфляции
+inflation <- safe_read_xlsx("3.Data/Инфляция и ключевая ставка Банка России_F01_12_2013_T18_06_2025.xlsx") %>%
+  as.data.table()
+setnames(inflation, names(inflation)[1], "date")
+inflation <- inflation %>%
+  .[, date := as.Date(paste0("01.", date), format = "%d.%m.%Y")] %>%
+  na.omit() %>%
+  setnames(names(.)[2], "key_rate") %>%
+  setnames(names(.)[3], "cpi_inflation") %>%
+  .[,-4]
+
+# Бизнес климат РФ
+bisness_data0 <- safe_read_xlsx("3.Data/add_info.xlsx", sheet = 2) %>%
+  as.data.table()
+setnames(bisness_data0, names(bisness_data0)[1], "date")
+
+
+spr_bisness_data <- data.table(ind = names(bisness_data0)[which(names(bisness_data0) != "date")]) %>%
+  .[,ind_code := paste0("B00",1:nrow(.))]
+
+
+bisness_data <- copy(bisness_data0) %>%
+  setnames(names(bisness_data0)[which(names(bisness_data0) != "date")],spr_bisness_data$ind_code) %>%
+  .[,date := as.Date(date)]
+
+
+# Платежный баланс
+bal_of_pay0 <- safe_read_xlsx("3.Data/bal_of_payments_ap.xlsx") %>%
+  as.data.table() %>%
+  melt(id.vars = "ind")
+
+# Создание справочника показателей платежного баланса
+spr_bal_of_pay <- data.table(ind = unique(bal_of_pay0$ind)) %>%
+  .[,ind_code := paste0("BP00",1:nrow(.))]
+
+# Функция для преобразования квартальных дат в месячные
+convert_quarter_to_monthly <- function(quarter_str) {
+  quarter_match <- stringr::str_match(quarter_str, "(\\d+)\\s+квартал\\s+(\\d+)\\s+г\\.")
+  if (is.na(quarter_match[1])) return(NA)
+
+  quarter <- as.numeric(quarter_match[2])
+  year <- as.numeric(quarter_match[3])
+
+  first_month <- (quarter - 1) * 3 + 3
+  return(as.Date(paste0(year, "-", sprintf("%02d", first_month), "-01")))
+}
+
+# Обработка данных платежного баланса с преобразованием квартальных дат
+bal_of_pay <- copy(bal_of_pay0)
+bal_of_pay[, date := convert_quarter_to_monthly(variable), by = "variable"]
+bal_of_pay <- merge(bal_of_pay, spr_bal_of_pay, by = "ind", all.x = TRUE)
+bal_of_pay[, ind := ind_code]
+bal_of_pay <- bal_of_pay[, -c("ind", "variable")]
+bal_of_pay <- bal_of_pay[!is.na(date)]
+setorder(bal_of_pay, date)
+bal_of_pay <- dcast(bal_of_pay, date ~ ind_code)
+
+# Создание полного месячного ряда дат
+min_date <- min(bal_of_pay$date)
+max_date <- max(bal_of_pay$date)
+full_dates <- data.table(date = seq.Date(min_date, max_date, by = "month"))
+
+# Объединение с полным рядом дат и заполнение пропусков
+bal_of_pay_full <- merge(full_dates, bal_of_pay, by = "date", all.x = TRUE) %>%
+  # Заполнение пропусков для квартальных данных (интерполяция)
+  .[, (names(.)[sapply(., is.numeric) & names(.) != "date"]) := lapply(.SD, function(x) {
+    if (any(is.na(x))) {
+      tt <- 1:length(x)
+      fit <- lm(x ~ tt)
+      x_hat <- predict(fit, newdata = data.frame(tt = tt))
+      ix <- which(is.na(x))
+      x[ix] <- x_hat[ix]
+      x
+    } else x
+  }), .SDcols = names(.)[sapply(., is.numeric) & names(.) != "date"]]
+
+# Кредитный импульс
+credit_impl <- fread("3.Data/кредитный_импульс_помесячно.csv") %>%
+  as.data.table() %>%
+  .[, date := as.Date(paste0(`Дата`,"-01"), format = "%Y-%m-%d")] %>%
+  .[, `Дата` := NULL] %>%
+  setnames("Кредитный импульс", "credit_impulse")
+
+# Межбанковская реальная ставка
+st_ruonia <- safe_read_xlsx("3.Data/RC_F11_01_2010_T04_07_2025.xlsx") %>%
+  as.data.table() %>%
+  .[,c("DT","ruo")] %>%
+  .[, ym := format(as.Date(DT), "%Y-%m")] %>%
+  .[, .(`ruonia_rate` = mean(ruo, na.rm = TRUE)), by = .(ym)] %>%
+  .[,date := as.Date(paste0(ym,"-01"), format = "%Y-%m-%d")] %>%
+  .[,-c("ym")]
+
+#ВВП
+gdp <- fread("3.Data/vvp_pomesyachno.csv") %>%
+  as.data.table() %>%
+  na.omit() %>%
+  setnames("ВВП_месяц","gdp_level") %>%
+  setnames("Дата", "date") %>%
+  .[, date := as.Date(date)]
+
+#Бюджетный импулс
+budget_impl <- safe_read_xlsx("3.Data/budget.xlsx") %>%
+  as.data.table() %>%
+  setnames("Date","date") %>%
+  .[,date := as.Date(paste0(date ,"-01"), format = "%Y-%m-%d")] %>%
+  setnames("Value","budget_impulse") %>%
+  .[,budget_impulse := as.numeric(budget_impulse)]
+
+#Скор санкций
+sunctions <- fread("3.Data/sunctions.csv") %>%
+  setnames(c("date","sunctions_score")) %>%
+  .[, ym := format(as.Date(date), "%Y-%m")] %>%
+  .[, .(`sunctions_score` = mean(`sunctions_score`, na.rm = TRUE)), by = .(ym)] %>%
+  .[,date := as.Date(paste0(ym,"-01"), format = "%Y-%m-%d")] %>%
+  .[,-c("ym")]
+
+respectation_inf <- fread("3.Data/ожидаемая_инфляция.csv") %>%
+  na.omit() %>%
+  .[,date := as.Date(paste0(`Дата`,"-01"), format = "%Y-%m-%d")] %>%
+  .[, `Дата` := NULL] %>%
+  setnames("Ожидаемая инфляция (%)", "expected_inflation")
+
+#Валатильность активов
+wind <- 30
+all_input_data <- safe_read_xlsx("3.Data/assets.xlsx") %>%
+  as.data.table()
+setnames(all_input_data, names(all_input_data)[1], "date")
+all_input_data <- all_input_data %>%
+  na.omit() %>%
+  .[order(date)] %>%
+  .[, all := MOEX + RTS] %>%
+  .[, vol := frollapply(all, wind, function(all){
+    mean <- mean(all)
+    res <- sum(abs(mean - all))/length(all)
+    })*sqrt(wind)] %>%
+  .[,c("date","vol")] %>%
+  na.omit() %>%
+  .[, ym := format(as.Date(date), "%Y-%m")] %>%
+  .[, .(volatility = mean(vol, na.rm = TRUE)), by = .(ym)] %>%
+  .[,date := as.Date(paste0(ym,"-01"), format = "%Y-%m-%d")] %>%
+  .[,-c("ym")] %>%
+  merge(inflation, by = "date", all.x = TRUE) %>%
+  merge(bal_of_pay_full, by = "date", all.x = TRUE) %>%
+  merge(bisness_data, by = "date", all.x = TRUE) %>%
+  merge(credit_impl, by = "date", all.x = TRUE) %>%
+  merge(st_ruonia, by = "date", all.x = TRUE) %>%
+  merge(gdp, by = "date", all.x = TRUE) %>%
+  merge(budget_impl, by = "date", all.x = TRUE) %>%
+  # merge(sunctions, by = "date", all.x = TRUE) %>%
+  merge(respectation_inf, by = "date", all.x = TRUE) %>%
+  # .[1,`Скор_санкций`:=2037] %>%
+  .[, (names(.)[sapply(., is.numeric) & names(.) != "date"]) := lapply(.SD, function(x) {
+    if (any(is.na(x))) {
+      tt <- 1:length(x)
+      fit <- lm(x ~ tt)
+      x_hat <- predict(fit, newdata = data.frame(tt = tt))
+      ix <- which(is.na(x))
+      x[ix] <- x_hat[ix]
+      x
+    } else x
+  }), .SDcols = names(.)[sapply(., is.numeric) & names(.) != "date"]]
+
+  return(all_input_data)
+}
+
 #### 0. Прогнозирование временных рядов через SVD с сезонностью и колебательностью ####
 
 #' PredictTimeSeriesWithSVD — Прогнозирование через сингулярное разложение с учетом сезонности и циклических паттернов
@@ -1848,7 +2026,7 @@ TestAllFunctions <- function(test_data = NULL) {
   })
 
   # Сохранение результатов
-  qsave(test_results, "3.Data/test_results.qs")
+  SaveProjectResults(test_results, "3.Data/test_results.qs")
 
   cat("\n=== РЕЗУЛЬТАТЫ ТЕСТИРОВАНИЯ ===\n")
   print(test_results)
@@ -2441,7 +2619,7 @@ RunComprehensiveTests <- function(test_data = NULL) {
   )
 
   # Сохранение результатов
-  qsave(test_results, "3.Data/comprehensive_test_results.qs")
+  SaveProjectResults(test_results, "3.Data/comprehensive_test_results.qs")
 
   cat("\n=== РЕЗУЛЬТАТЫ КОМПЛЕКСНОГО ТЕСТИРОВАНИЯ ===\n")
   cat("Пройдено тестов:", passed_tests, "из", total_tests, "\n")
@@ -2453,22 +2631,42 @@ RunComprehensiveTests <- function(test_data = NULL) {
 
 #### 8. Утилиты ####
 
+#' SaveProjectResults — Сохранение объекта на диск
+#' Пакет qs снят с CRAN (архивирован 2026-01-17) и в 9.libraries.r не подключается.
+#' Если qs установлен, объект сохраняется через qs::qsave() по указанному пути;
+#' иначе — через saveRDS() в тот же путь с расширением .rds.
+#' @param object сохраняемый объект
+#' @param path путь к файлу .qs
+#' @return путь к фактически записанному файлу (невидимо)
+SaveProjectResults <- function(object, path) {
+  if (requireNamespace("qs", quietly = TRUE)) {
+    qs::qsave(object, path)
+  } else {
+    path <- sub("\\.qs$", ".rds", path)
+    saveRDS(object, path)
+    message("Пакет qs не установлен; объект сохранён через saveRDS(): ", path)
+  }
+  invisible(path)
+}
+
 #' SaveResults — Сохранение результатов анализа
 #' @param results список результатов
 #' @param filename имя файла для сохранения
 SaveResults <- function(results, filename = "analysis_results.qs") {
-  filepath <- file.path("3.Data", filename)
-  qsave(results, filepath)
+  filepath <- SaveProjectResults(results, file.path("3.Data", filename))
   cat("Результаты сохранены в:", filepath, "\n")
 }
 
-#' LoadResults — Загрузка результатов анализа
+#' LoadResults — Загрузка результатов анализа (.qs через qs, иначе .rds)
 #' @param filename имя файла для загрузки
 #' @return загруженные результаты
 LoadResults <- function(filename = "analysis_results.qs") {
   filepath <- file.path("3.Data", filename)
-  if (file.exists(filepath)) {
-    return(qread(filepath))
+  rds_path <- sub("\\.qs$", ".rds", filepath)
+  if (file.exists(filepath) && requireNamespace("qs", quietly = TRUE)) {
+    return(qs::qread(filepath))
+  } else if (file.exists(rds_path)) {
+    return(readRDS(rds_path))
   } else {
     warning("Файл не найден:", filepath)
     return(NULL)

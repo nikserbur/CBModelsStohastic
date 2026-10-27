@@ -1,4 +1,4 @@
-# DataAnalysisAndRegression.qs — Анализ данных и регрессионное моделирование для прогнозирования ключевых переменных
+# DataAnalysisAndRegression.R — Анализ данных и регрессионное моделирование для прогнозирования ключевых переменных
 # Проект: Стохастическое моделирование ставок ЦБ с масштабируемым подходом
 # Автор: Бураков Никита Сергеевич
 
@@ -459,9 +459,9 @@ RunDataAnalysisAndRegression <- function(input_data) {
     timestamp = Sys.time()
   )
   
-  qs::qsave(results, "3.Data/data_analysis_and_regression_results.qs")
+  saved_path <- SaveProjectResults(results, "3.Data/data_analysis_and_regression_results.qs")
   
-  cat("Анализ завершен! Результаты сохранены в 3.Data/data_analysis_and_regression_results.qs\n")
+  cat("Анализ завершен! Результаты сохранены в", saved_path, "\n")
   
   return(results)
 }

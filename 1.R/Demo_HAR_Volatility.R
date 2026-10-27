@@ -328,7 +328,7 @@ har_model_results <- list(
 )
 
 # Сохранение в файл
-qsave(har_model_results, "3.Data/har_volatility_model.qs")
+har_saved_path <- SaveProjectResults(har_model_results, "3.Data/har_volatility_model.qs")
 
 #### 10. Отображение результатов ####
 print(har_plot)
@@ -337,4 +337,4 @@ cat("\n=== HAR ДИАГНОСТИКА ===\n")
 print(har_diagnostics[, .(Period, Date, HAR_Forecast, Integrated_Mean, Q25, Q75, Uncertainty_Range)])
 
 cat("\nHAR модель успешно обучена и применена точно по методологии Main.R\n")
-cat("Результаты сохранены в: 3.Data/har_volatility_model.qs\n")
+cat("Результаты сохранены в:", har_saved_path, "\n")
