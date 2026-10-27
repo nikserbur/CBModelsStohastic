@@ -8,6 +8,21 @@ using namespace Rcpp;
 // Ускорение генерации стохастических процессов
 // Автор: Бураков Никита Сергеевич
 
+// Генерация S(alpha, beta, 1, 0) по формуле Chambers-Mallows-Stuck (1976)
+// в форме Weron (1996), параметризация 1 (как stabledist::rstable(..., pm = 1);
+// при beta = 0 совпадает с pm = 0). u ~ U(-pi/2, pi/2), w ~ Exp(1).
+double CmsStableDraw(double alpha, double beta, double u, double w) {
+  if (std::fabs(alpha - 1.0) < 1e-12) {
+    double h = M_PI / 2.0 + beta * u;
+    return (2.0 / M_PI) * (h * std::tan(u) - beta * std::log((M_PI / 2.0) * w * std::cos(u) / h));
+  }
+  double zeta = beta * std::tan(M_PI * alpha / 2.0);
+  double b = std::atan(zeta) / alpha;
+  double s = std::pow(1.0 + zeta * zeta, 1.0 / (2.0 * alpha));
+  return s * std::sin(alpha * (u + b)) / std::pow(std::cos(u), 1.0 / alpha) *
+         std::pow(std::cos(u - alpha * (u + b)) / w, (1.0 - alpha) / alpha);
+}
+
 // [[Rcpp::export]]
 NumericMatrix FastAlphaStableSimulation(int n_sims, int horizon, double alpha, 
                                        double beta, double gamma, double delta) {
@@ -25,20 +40,11 @@ NumericMatrix FastAlphaStableSimulation(int n_sims, int horizon, double alpha,
       double u = uniform(gen) * M_PI - M_PI/2;
       double w = -log(uniform(gen));
       
-      double stable_value;
-      if (alpha == 1.0) {
-        stable_value = (2/M_PI) * ((M_PI/2 + beta*u) * tan(u) - 
-                                  beta * log((M_PI/2 * w * cos(u))/(M_PI/2 + beta*u)));
-      } else {
-        double t_alpha = tan(M_PI * alpha / 2);
-        double beta_alpha = atan(beta * t_alpha) / alpha;
-        stable_value = pow(cos(u - alpha * beta_alpha), -1/alpha) * 
-                      cos(u - alpha * beta_alpha + alpha * beta_alpha) * 
-                      pow(cos(alpha * beta_alpha), 1/alpha) * 
-                      pow(w, (1-alpha)/alpha);
-      }
-      
-      result(i, t) = gamma * stable_value + delta;
+      double stable_value = CmsStableDraw(alpha, beta, u, w);
+
+      // Масштаб и сдвиг в параметризации 1 (при alpha = 1 добавляется 2/pi*beta*gamma*log(gamma))
+      double shift = (std::fabs(alpha - 1.0) < 1e-12) ? (2.0 / M_PI) * beta * gamma * std::log(gamma) : 0.0;
+      result(i, t) = gamma * stable_value + shift + delta;
     }
   }
   
@@ -145,16 +151,8 @@ NumericMatrix FastIntegratedStochasticSimulation(int n_sims, int horizon,
         double u = uniform(gen) * M_PI - M_PI/2;
         double w = -log(uniform(gen));
         
-        double stable_value;
-        if (alpha_stable == 1.0) {
-          stable_value = (2/M_PI) * ((M_PI/2) * tan(u) - 
-                                    log((M_PI/2 * w * cos(u))/(M_PI/2)));
-        } else {
-          double t_alpha = tan(M_PI * alpha_stable / 2);
-          stable_value = pow(cos(u), -1/alpha_stable) * 
-                        cos(u) * 
-                        pow(w, (1-alpha_stable)/alpha_stable);
-        }
+        // Симметричный alpha-stable скачок (beta = 0)
+        double stable_value = CmsStableDraw(alpha_stable, 0.0, u, w);
         
         stable_jumps += gamma_stable * stable_value * vol_multiplier;
       }

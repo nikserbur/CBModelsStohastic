@@ -1152,7 +1152,7 @@ PredictRegimeProbabilities <- function(hmm_model, horizon, current_state = NULL)
     prob_matrix[h, ] <- prob_matrix[h-1, ] %*% hmm_model$transition_matrix
   }
 
-  colnames(prob_matrix) <- paste0(1:7)
+  colnames(prob_matrix) <- as.character(seq_len(hmm_model$n_states))
   return(prob_matrix)
 }
 
@@ -1496,10 +1496,15 @@ ForwardBackward <- function(observations, pi, A, mu, sigma) {
   beta <- matrix(0, n_obs, n_states)
 
   # Forward алгоритм
+  # Нормирующие множители c_t = p(x_t | x_1..x_{t-1}); log-likelihood = sum(log(c_t))
+  scale_factors <- numeric(n_obs)
+
   # Инициализация
   for (k in 1:n_states) {
     alpha[1, k] <- pi[k] * dnorm(observations[1], mu[k], sigma[k])
   }
+  scale_factors[1] <- sum(alpha[1, ])
+  alpha[1, ] <- alpha[1, ] / scale_factors[1]
 
   # Рекурсия
   for (t in 2:n_obs) {
@@ -1507,7 +1512,8 @@ ForwardBackward <- function(observations, pi, A, mu, sigma) {
       alpha[t, k] <- sum(alpha[t-1, ] * A[, k]) * dnorm(observations[t], mu[k], sigma[k])
     }
     # Нормализация для численной стабильности
-    alpha[t, ] <- alpha[t, ] / sum(alpha[t, ])
+    scale_factors[t] <- sum(alpha[t, ])
+    alpha[t, ] <- alpha[t, ] / scale_factors[t]
   }
 
   # Backward алгоритм
@@ -1523,8 +1529,9 @@ ForwardBackward <- function(observations, pi, A, mu, sigma) {
     beta[t, ] <- beta[t, ] / sum(beta[t, ])
   }
 
-  # Расчет log-likelihood
-  log_likelihood <- sum(log(rowSums(alpha)))
+  # Расчет log-likelihood: после нормировки rowSums(alpha) = 1, поэтому
+  # правдоподобие собирается из нормирующих множителей
+  log_likelihood <- sum(log(scale_factors))
 
   return(list(
     alpha = alpha,
@@ -2118,7 +2125,7 @@ TestAllFunctions <- function(test_data = NULL) {
 #' @param n_simulations количество симуляций
 #' @param horizon горизонт прогнозирования
 #' @param parameters параметры модели
-#' @return матрица симуляций
+#' @return матрица симуляций horizon × n_simulations (строки — горизонты)
 OptimizedMonteCarlo <- function(n_simulations = 1000, horizon = 12, parameters = list()) {
 
   if (RCPP_AVAILABLE) {
@@ -2179,7 +2186,9 @@ OptimizedMonteCarlo <- function(n_simulations = 1000, horizon = 12, parameters =
         alpha_stable, gamma_stable, sigma_gaussian, lambda_poisson
       )
 
-      return(result)
+      # C++ возвращает n_simulations × horizon; приводим к horizon × n_simulations,
+      # как в R-реализации ниже и в IntegratedStochasticCBModel()
+      return(t(result))
 
     }, error = function(e) {
       cat("Ошибка в Rcpp, переключаюсь на R реализацию:", e$message, "\n")
@@ -2202,7 +2211,7 @@ OptimizedMonteCarlo <- function(n_simulations = 1000, horizon = 12, parameters =
 
     for (t in 2:horizon) {
       shock <- rnorm(1, 0, volatility)
-      rates[t] <- rates[t-1] * (1 + drift)
+      rates[t] <- rates[t-1] * (1 + drift) + shock
       rates[t] <- max(0.1, min(25, rates[t]))  # Ограничения
     }
 
