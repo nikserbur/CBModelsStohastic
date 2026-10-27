@@ -14,6 +14,7 @@ libs <- c(
   # Визуализация
   "plotly",            # Интерактивные графики
   "visNetwork",        # Интерактивные сетевые диаграммы
+  "viridis",           # Colour palettes (5.HiddenMarkingsModels.R)
 
   # Статистика и моделирование
   "stats",             # Базовая статистика R
@@ -26,9 +27,12 @@ libs <- c(
   "fitdistrplus",      # Подгонка распределений
   "stabledist",        # α-stable распределения
   "alphastable",       # Альтернативная библиотека для α-stable
+  "actuar",            # dpareto(shape, scale) for fitdist(..., "pareto") in Main.R; must be attached after extraDistr
+  "Pareto",            # Pareto random draws (10.DashboardData.R examples)
 
   # Оценка качества моделей
   "scoringRules",      # CRPS, PIT и другие метрики
+  "nortest",           # Anderson-Darling normality test (10.DashboardData.R)
 
   # Работа с файлами
   "qs",                # Быстрое сохранение/загрузка данных
@@ -38,6 +42,10 @@ libs <- c(
   "zoo",               # Временные ряды
   "forecast",          # Прогнозирование
   "lubridate",         # Работа с датами
+  "xts",               # Time series objects (Demo_Volatility_Analysis.R)
+  "rugarch",           # GARCH(1,1) benchmark (Demo_Volatility_Analysis.R)
+  "highfrequency",     # HAR model (Demo_Volatility_Analysis.R)
+  "Rcpp",              # Compiling 2.Cpp/RDCScpp.cpp via Rcpp::sourceCpp()
   "httr"               # HTTP запросы и соединения
 )
 
