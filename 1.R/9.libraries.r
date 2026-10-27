@@ -35,7 +35,9 @@ libs <- c(
   "nortest",           # Anderson-Darling normality test (10.DashboardData.R)
 
   # Работа с файлами
-  "qs",                # Быстрое сохранение/загрузка данных
+  # "qs" is not attached here: it was archived on CRAN on 2026-01-17, so
+  # install.packages("qs") fails. It is only needed for the optional
+  # save_qs_path argument of BuildDistDashboard() in 10.DashboardData.R.
   "readxl",            # Чтение Excel файлов
 
   # Дополнительные библиотеки для расширенной функциональности
